@@ -513,7 +513,15 @@ fn trim_spaces<'a, O>(
 
 // The following code create parser to parse content stream.
 
+/// White space between content stream tokens: every PDF white-space character
+/// (ISO 32000-1, 7.2.2), NUL and form feed included.
 fn content_space(input: ParserInput) -> NomResult<()> {
+    map(take_while(is_whitespace), |_| ()).parse(input)
+}
+
+/// The separator after an inline image's `ID`. Image data follows it directly
+/// and may itself begin with NUL or form feed, so those are not skipped.
+fn inline_image_data_space(input: ParserInput) -> NomResult<()> {
     map(take_while(|c| b" \t\r\n".contains(&c)), |_| ()).parse(input)
 }
 
@@ -557,7 +565,7 @@ fn inline_image(input: ParserInput) -> NomResult<(Vec<Object>, String)> {
 
 fn inline_image_impl(input: ParserInput) -> NomResult<(Vec<Object>, String)> {
     let (input, stream_dict) = inner_dictionary.parse(input)?;
-    let (input, _) = pair(tag(&b"ID"[..]), content_space).parse(input)?;
+    let (input, _) = pair(tag(&b"ID"[..]), inline_image_data_space).parse(input)?;
     let (_, (input, stream)) = convert_result(image_data_stream(input, stream_dict), input, ErrorKind::Fail)?;
     let (input, _) = (content_space, tag(&b"EI"[..]), content_space).parse(input)?;
     Ok((input, (vec![Object::Stream(stream)], String::from("BI"))))
@@ -776,6 +784,26 @@ startxref
             Some(num) => assert_eq!(num, 153804),
             None => panic!("could not parse number in startxref"),
         }
+    }
+
+    #[test]
+    fn content_separated_by_nul_and_form_feed() {
+        // NUL and form feed are white space (ISO 32000-1, 7.2.2); stopping at
+        // one dropped every operation after it without an error.
+        let input = b"q 1 1 1 rg 0 0 10 10 re\0\0\0f\x0CQ /Fm0 Do";
+        let out = content(test_span(input)).unwrap();
+        let operators: Vec<_> = out.operations.iter().map(|op| op.operator.as_str()).collect();
+        assert_eq!(operators, ["q", "rg", "re", "f", "Q", "Do"]);
+    }
+
+    #[test]
+    fn inline_image_data_may_begin_with_nul() {
+        let input = b"BI /W 2 /H 1 /BPC 8 /CS /Gray ID \0\x0C EI Q";
+        let out = content(test_span(input)).unwrap();
+        let operators: Vec<_> = out.operations.iter().map(|op| op.operator.as_str()).collect();
+        assert_eq!(operators, ["BI", "Q"]);
+        let image = out.operations[0].operands[0].as_stream().unwrap();
+        assert_eq!(image.content, b"\0\x0C");
     }
 
     #[test]
