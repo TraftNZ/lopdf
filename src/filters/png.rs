@@ -69,7 +69,7 @@ pub fn decode_row(filter: FilterType, bpp: usize, previous: &[u8], current: &mut
             }
 
             for i in bpp..len {
-                current[i] = current[i].wrapping_add((i16::from(current[i - bpp]) + i16::from(previous[i]) / 2) as u8);
+                current[i] = current[i].wrapping_add(((u16::from(current[i - bpp]) + u16::from(previous[i])) / 2) as u8);
             }
         }
         Paeth => {
@@ -132,7 +132,7 @@ pub fn encode_row(method: FilterType, bpp: usize, previous: &[u8], current: &mut
         }
         Avg => {
             for i in (bpp..len).rev() {
-                current[i] = current[i].wrapping_sub(current[i - bpp].wrapping_add(previous[i]) / 2);
+                current[i] = current[i].wrapping_sub(((u16::from(current[i - bpp]) + u16::from(previous[i])) / 2) as u8);
             }
 
             for i in 0..bpp {
@@ -147,6 +147,32 @@ pub fn encode_row(method: FilterType, bpp: usize, previous: &[u8], current: &mut
             for i in 0..bpp {
                 current[i] = current[i].wrapping_sub(paeth_predict(0, previous[i], 0));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn average_filter_floors_the_sum_of_left_and_above() {
+        let previous = [10_u8, 200, 255, 7, 0, 130];
+        let mut current = [1_u8, 2, 3, 4, 5, 6];
+        decode_row(FilterType::Avg, 1, &previous, &mut current);
+        // Each byte adds floor((left + above) / 2), summed before halving.
+        assert_eq!(current, [6, 105, 183, 99, 54, 98]);
+    }
+
+    #[test]
+    fn average_filter_round_trips() {
+        let previous = [250_u8, 3, 255, 128, 0, 77, 200, 1];
+        let original = [255_u8, 254, 1, 129, 64, 200, 7, 250];
+        for bpp in [1, 2, 3] {
+            let mut row = original;
+            encode_row(FilterType::Avg, bpp, &previous, &mut row);
+            decode_row(FilterType::Avg, bpp, &previous, &mut row);
+            assert_eq!(row, original);
         }
     }
 }
